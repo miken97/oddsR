@@ -27,4 +27,3 @@ pinnacle_request(url)
 }
 
 }
-\keyword{internal}

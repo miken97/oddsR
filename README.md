@@ -8,3 +8,8 @@
 
 The goal of `{{oddsR}}` is to provide functions for interacting with
 wagering APIs.
+
+## Resources
+
+-   [Pinnacle - Lines API Reference
+    (1.0.0)](https://pinnacleapi.github.io/linesapi)

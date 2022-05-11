@@ -1,0 +1,734 @@
+---
+title: "Game Lines"
+subtitle: " " 
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+---
+
+```{r setup, include = F}
+knitr::opts_chunk$set(echo = T, message = F, warning = F, eval = F)
+```
+
+```{r libs}
+# libraries
+library(tidyverse)
+library(httr2)
+```
+
+---------------------------------------------------------------------------
+
+# Pinnacle API
+
+Resources:
+
+  + [Pinnacle - Lines API Reference (1.0.0)](https://pinnacleapi.github.io/linesapi)
+  
+  + "Straight": Returns straight odds for all non-settled events.
+  
+
+## URLs
+
+```{r}
+pinn_base_url <- "https://guest.api.arcadia.pinnacle.com/0.1/"
+
+pinnacle_ids <- list(
+  sports = list(
+    "baseball"   = 3L,
+    "basketball" = 4L,
+    "handball"   = 18L,
+    "hockey"     = 19L,
+    "rugby"      = 27L,
+    "soccer"     = 29L,
+    "tennis"     = 33L,
+    "formula1"   = 41L
+  ),
+  leagues = list(
+    "nfl" = 889L,
+    "mlb" = 246L,
+    "nba" = 487L,
+    "nhl" = 1456L
+  )
+)
+```
+
+
+## Endpoints
+
+```{r}
+pinn_endpts <- list(
+
+  # markets: leagues
+  straight = "leagues/{league_id}/markets/straight"
+  matchup  = "leagues/{league_id}/matchups"          # get info on markets
+
+  # markets: sports
+  straight = "sports/{sport_id}/markets/straight"    # ?primaryOnly=false&withSpecials=false
+  matchup  = "sports/{sport_id}/matchups"            # ?withSpecials=false
+
+  # sub markets: players
+  straight = "matchups/{matchup_id}/markets/related/straight"
+  related  = "matchups/{matchup_id}/related"
+
+  # queries
+  # oddsFormat <- c("American", "Decimal")
+  # since: Retrieve incremental updates (see line 632 <https://github.com/pinnacleapi/openapi-specification/blob/master/linesapi-oas.yaml>)
+
+)
+```
+
+```{r}
+url <- "https://guest.api.arcadia.pinnacle.com/0.1/"
+
+hockey_leagues_url <- "https://guest.api.arcadia.pinnacle.com/0.1/sports/19/leagues?all=false"
+
+api_resp <- pinnacle_request(hockey_leagues_url)
+
+hockey_leagues <- map_dfr(api_resp, ~compact(.x))
+```
+
+
+## GET Request
+
+See [`httr2 Wrapping APIs Article](https://httr2.r-lib.org/articles/wrapping-apis.html) for more information.
+
+```{r}
+pinnacle_request <- function(url, flatten = FALSE) {
+
+  # url <- "https://guest.api.arcadia.pinnacle.com/0.1/"
+  
+  # create request that uses the base API url
+  api_req <- httr2::request(url) |>
+    httr2::req_headers(
+      "Referer" = "https://www.pinnacle.com/",
+      "X-Session" = "Vqlf7eLQOFpEeUYxrXlGfd9YMXj7xYGH",
+      "X-API-Key" = "CmX2KcMrXuFmNg6YFbmTxE0y9CIrOi0R"
+    ) 
+  
+  api_resp <- api_req |>
+    # add on additional paths (i.e. endpoints)
+    httr2::req_url_path_append("sports") |> 
+    httr2::req_url_path_append("19") |> 
+    httr2::req_url_path_append("leagues") |> 
+    # modify query parameters
+    httr2::req_url_query(`all` = FALSE) |> 
+    httr2::req_perform()
+  
+  # result returned as JSON
+  api_resp |>
+    httr2::resp_body_json(simplifyVector = flatten)
+
+}
+```
+
+```{r}
+pinn_url <- glue::glue("{pinn_base_url}{pinn_league_id}{pinn_type}")
+
+api_resp <- pinnacle_request(pinn_url)
+api_resp
+```
+
+
+## Munge
+
+```{r}
+url <- list(
+  base_url = "https://guest.api.arcadia.pinnacle.com/0.1",
+  endpoints = "leagues"
+)
+
+url <- paste(url, sep = "", collapse = "/")
+
+sport_id <- pinnacle_ids$sports$hockey
+all_sports <- glue::glue("https://guest.api.arcadia.pinnacle.com/0.1/sports/{sport_id}/leagues?all=false")
+
+api_resp <- pinnacle_request(url = all_sports)
+
+resp_unnested <- api_resp |>
+  map_dfr(~as_tibble(compact(.x)))
+
+api_resp[[1]] |> names()
+api_resp[[1]][["sport"]] |> names()
+
+pluck(api_resp, 1, "id")
+pluck(api_resp, 1, "sport", "id")
+
+tibble(
+  id = map_int(api_resp, ~pluck(.x, "id")),
+  sport_id = map_int(api_resp, ~pluck(.x, "sport", "id"))
+)
+
+x <- api_resp[[1]] |>
+  compact() |>
+  as_tibble() |>
+  mutate(sport = as_tibble(sport))
+
+x$sport |> as_tibble()
+
+league_id <- pinnacle_ids$leagues$mlb
+url <- glue::glue("https://guest.api.arcadia.pinnacle.com/0.1/leagues/{league_id}/matchups")
+api_resp <- pinnacle_request(url, flatten = T)
+
+api_resp$parent |>
+  as_tibble() |>
+  unnest(participants)
+```
+
+---------------------------------------------------------------------------
+
+# Action Network API
+
+Resources:
+
+  + [Ryan Wittenberg (GitHub)](https://github.com/wittenber0/webbase/blob/563ea1c2ae9f39377f54c43d39f58ff12b5b787b/client/src/Shared/arbitrage-service.ts)
+
+```{r}
+# action network urls
+action_network_urls <- list(
+  base       = "https://api.actionnetwork.com/web/v1",
+  books      = "books",
+  scoreboard = "scoreboard"
+)
+```
+
+## Endpoints
+
+### Books
+
+```{r}
+# api request for 'books' endpoint
+action_net_req_url <- list(
+  action_network_urls$base,
+  action_network_urls$books
+) |> 
+  paste0(collapse = "/") 
+
+action_net_resp <- jsonlite::fromJSON(action_net_req_url, flatten = FALSE)
+
+# api response tidier for 'books' endpoint
+action_net_books <- action_net_resp |> 
+  pluck("books") |> 
+  as_tibble() |> 
+  unnest_wider(meta) |> 
+  unnest_wider(logos) |> 
+  unnest_wider(deeplink) |>
+  relocate(book_parent_id, .after = source_name) |> 
+  arrange(id, display_name)
+
+action_net_books
+
+# ontario only books
+action_net_books_ON <- action_net_books |> 
+  unnest(states) |>
+  mutate(states = map(states, ~as_tibble_col(.x, "states"))) |> 
+  unnest(states) |> 
+  filter(states == "ON") |> 
+  distinct()
+  
+action_net_books_ON
+```
+
+```{r}
+action_network_api <- function(league_abbr = "all", date_id = Sys.Date()) {
+  
+  # api request for 'scoreboard' endpoint
+  action_net_req_url <- list(
+    base_url = action_network_urls$base,
+    endpoint = action_network_urls$scoreboard,
+    league = league_abbr
+  ) |> 
+    paste0(collapse = "/") 
+  
+  query_lst <- compact(
+    list(
+      bookIds = NULL,
+      date = str_remove_all(date_id, "-")
+    )
+  )
+  
+  query_vec <- paste(names(query_lst), query_lst, sep = "=", collapse = "&")
+  
+  action_net_resp <- paste(action_net_req_url, query_vec, sep = "?") |> 
+    jsonlite::fromJSON(action_net_req_url, flatten = TRUE)
+  
+  action_net_odds <- action_net_resp |> 
+    pluck("all_games") |> 
+    as_tibble()
+    filter(league_name == league_abbr) |>
+    select(games) |>
+    unnest(games) 
+  
+  teams_tidied <- action_net_odds |>
+    transmute(
+      row_id = row_number(),
+      teams = map(
+        .x = teams, 
+        .f = ~as_tibble(.x) |> 
+          add_column(venue = c("away", "home"), .after = 5)
+      )
+    ) |> 
+    unnest(teams) |> 
+    pivot_wider(
+      id_cols = row_id,
+      names_from = venue,
+      names_glue = "{venue}_{.value}",
+      values_from = -c(row_id, venue)
+    ) |> 
+    nest(team_info = -c(row_id, contains("abbr"), contains("standings"))) |> 
+    nest(standings = c(contains("standings")))
+  
+  odds_tidied <- map_dfr(action_net_odds$odds, ~as_tibble(.x), .id = "row_id") |> 
+    mutate(row_id = as.integer(row_id))
+  
+  teams_tidied |> 
+    select(-c(team_info, standings)) |> 
+    inner_join(odds_tidied, by = "row_id") |> 
+    relocate(type, .after = row_id) |>
+    filter(type == "game")
+  
+}
+```
+
+```{r}
+league_abbr <- c("nhl", "mlb")
+
+action_network_lines <- action_network_api("nhl")
+
+action_network_lines |> view()
+```
+
+```{r}
+test_url <- "https://api.actionnetwork.com/web/v1/scoreboard/nhl?date=20220429"
+
+json_raw <- jsonlite::fromJSON(test_url) |> 
+  pluck("games") |> 
+  as_tibble()
+
+json_raw |> view()
+json_raw |> names()
+
+json_raw$boxscore |> 
+  as_tibble() |>
+  unnest_wider(strength) |> 
+  rename(away_strength = away, home_strength = home) |> 
+  unnest_auto(linescore)
+
+book_ids <- action_net_books |> 
+  distinct(id, display_name, abbr, source_name, book_parent_id)
+
+map_dfr(json_raw$odds, ~as_tibble(.x), .id = "row_id") |> 
+  mutate(row_id = as.integer(row_id)) |> 
+  relocate(type, book_id, .after = row_id) |> 
+  filter(type == "game") |> 
+  distinct(book_id) |> 
+  left_join(book_ids, by = c("book_id" = "id"))
+  
+
+```
+
+---------------------------------------------------------------------------
+
+# Line Manipulation
+
+## Overview
+
+### Moneyline
+
+Probability $G_{1} < G_{2}$ or $G_{1} > G_{2}$ 
+
+
+### Spread
+
+Probability $G_{F} - G_{D} \geq 2$ or $G_{F} > G_{A}$, where:
+
+  + $G_{F}$ is the favoured team; and,
+  + $G_{D}$ is the underdog.
+
+
+### Total
+
+Probability $G_{H} + G_{A} < X$ or $G_{H} + G_{A} > X$
+
+---------------------------------------------------------------------------
+
+## Example
+
+```{r}
+# source script
+source(here::here("code/pinnacle_scrape.R"))
+
+date_id <- Sys.Date()
+
+pinn_df <- tidy_pinnacle() |>
+  filter(lubridate::as_date(date_time) == date_id) |> 
+  select(-c(date_time, matchup_id)) |>
+  mutate(underdog = if_else(home_points_pl < 0, "away", "home"), .before = 1)
+```
+
+```{r, eval = F}
+lines_df <- pinn_df |> 
+  filter(home_team == "STL")
+
+names(lines_df)
+
+# moneyline (win probabilities)
+away_ml <- lines_df[1, "away_imp_prob_ml", drop = T]
+home_ml <- lines_df[1, "home_imp_prob_ml", drop = T]
+
+sum(away_ml, home_ml)
+
+# spread (goal difference probabilities)
+underdog <- lines_df[1, "underdog", drop = T]
+away_pl <- lines_df[1, "away_imp_prob_pl", drop = T]
+home_pl <- lines_df[1, "home_imp_prob_pl", drop = T]
+
+away_pl; home_pl; underdog
+
+# totals (total goal probability)
+total <- unique(c(lines_df[1, "under_points", drop = T], lines_df[1, "over_points", drop = T]))
+under <- lines_df[1, "under_imp_prob", drop = T]
+over <- lines_df[1, "over_imp_prob", drop = T]
+
+total; under; over
+```
+
+```{r}
+# moneyline (win probabilities)
+away_ml <- 0.4628794
+home_ml <- 0.5371206
+
+sum(away_ml, home_ml)
+away_ml; home_ml
+
+# spread (goal difference probabilities)
+underdog <- "away"
+away_pl <- 0.6704792
+home_pl <- 0.3295208
+
+sum(away_pl, home_pl)
+away_pl; home_pl; underdog
+
+# totals (total goal probability)
+total <- 6.5
+under <- 0.5095568
+over <- 0.4904432
+
+sum(under, over)
+total; under; over
+```
+
+Each team's goals will be Poisson distributed with mean rate $\lambda$.
+
+
+### Totals
+
+Find values for $\lambda_{A}$ and $\lambda_{H}$ that equate to:
+
+  + $P(G_{H} + G_{A}) < $ `r total` is `r scales::percent(under, 0.01)`; and,
+  + $P(G_{H} + G_{A}) > $ `r total` is `r scales::percent(over, 0.01)`.
+
+```{r}
+# totals
+total <- lambda_away + lambda_home
+
+totals_fn <- function(par, total, away_ml, home_ml, under, over) {
+  
+  lambda_away <- par[1]
+  lambda_home <- par[2]
+  
+  joint_pdf_df <- crossing(
+    goals_away = seq.int(0L, 12L), 
+    goals_home = seq.int(0L, 12L)
+  ) |> 
+    mutate(
+      total_goals = goals_away + goals_home,
+      pdf_away = dpois(goals_away, lambda = lambda_away),
+      pdf_home = dpois(goals_home, lambda = lambda_home),
+      joint_pdf = pdf_away * pdf_home,
+      ml_winner = case_when(
+        goals_away > goals_home ~ "away",
+        goals_away < goals_home ~ "home",
+        goals_away == goals_home ~ "tie",
+        TRUE ~ NA_character_
+      )
+    )
+  
+  moneyline_pdf <- joint_pdf_df |> 
+    group_by(ml_winner) |> 
+    summarize(pdf = sum(joint_pdf)) |> 
+    filter(ml_winner != "tie") |> 
+    mutate(pdf = pdf / sum(pdf))
+  
+  # sum(moneyline_pdf$pdf)
+  
+  prob_ml_away <- sum(moneyline_pdf[moneyline_pdf$ml_winner == "away", "pdf", drop = T])
+  prob_ml_home <- sum(moneyline_pdf[moneyline_pdf$ml_winner == "home", "pdf", drop = T])
+  sse_moneyline <- sum((prob_ml_away - away_ml)^2, (prob_ml_home - home_ml)^2)
+  
+  totals_pdf <- joint_pdf_df |> 
+    group_by(total_goals) |> 
+    summarize(pdf = sum(joint_pdf))
+  
+  # sum(totals_pdf$pdf)
+  
+  prob_under <- sum(totals_pdf[totals_pdf$total_goals < total, "pdf", drop = T])
+  prob_over <- sum(totals_pdf[totals_pdf$total_goals > total, "pdf", drop = T])
+  sse_totals <- sum((prob_under - under)^2, (prob_over - over)^2)
+  
+  sse <- sse_moneyline + sse_totals
+  
+  sse
+  
+}
+
+# use mle to find most likely value of theta (i.e. P(data|theta))
+mle_fit <- optim(
+  par = c(2, 2),    # initial values
+  fn = totals_fn, 
+  away_ml = away_ml,
+  home_ml = home_ml,
+  total = total, 
+  under = under, 
+  over = over,
+  method = "L-BFGS-B",
+  lower = c(
+    lambda_away = 1, 
+    lambda_home = 1
+  ),
+  upper = c(
+    lambda_away = 8, 
+    lambda_home = 8
+  )
+)
+
+mle_fit
+
+lambda_away <- mle_fit$par[1]
+lambda_home <- mle_fit$par[2]
+
+sum(mle_fit$par)
+
+away_win_pr <- mean(rpois(10000, lambda = mle_fit$par[1]) > rpois(10000, lambda = mle_fit$par[2])) 
+home_win_pr <- mean(rpois(10000, lambda = mle_fit$par[1]) < rpois(10000, lambda = mle_fit$par[2])) 
+
+away_win_pr / (away_win_pr + home_win_pr)
+home_win_pr / (away_win_pr + home_win_pr)
+
+
+# under / over probabilities
+ppois(total, lambda = sum(mle_fit$par), lower.tail = TRUE)
+ppois(total, lambda = sum(mle_fit$par), lower.tail = FALSE)
+```
+
+
+```{r}
+  joint_pdf_totals <- crossing(
+    goals_away = seq.int(0L, 12L), 
+    goals_home = seq.int(0L, 12L)
+  ) |> 
+    mutate(
+      total_goals = goals_away + goals_home,
+      pdf_away = dpois(goals_away, lambda = lambda_away),
+      pdf_home = dpois(goals_home, lambda = lambda_home),
+      joint_pdf = pdf_away * pdf_home
+    )
+
+joint_pdf_totals |> 
+  select(goals_away, goals_home, joint_pdf) |> 
+  mutate(
+    ml_winner = case_when(
+      goals_away > goals_home ~ "away",
+      goals_away < goals_home ~ "home",
+      goals_away == goals_home ~ "tie",
+      TRUE ~ NA_character_
+    ) 
+  ) |> 
+  group_by(winner) |> 
+  summarize(prob = sum(joint_pdf))
+  
+  pivot_wider(names_from = goals_home, values_from = joint_pdf)
+```
+
+
+---------------------------------------------------------------------------
+
++ **Multinomial Distribution:** Models the outcome of $n$ experiments, where the outcome of each trial has a **categorical distribution**, such as rolling a $k$-sided die $n$ times.
+
+  + **Bernoulli distribution** when $k = 2$ and $n = 1$.
+  
+  + **Binomial distribution** when $k = 2$ and $n > 1$.
+  
+  + **Categorical distribution** when $k > 2$ and $n = 1$.
+
+
+```{r}
+tribble(
+  ~distribution, ~rv_type,     ~k_outcomes, ~n_draws,   ~alt_name,
+  "categorical", "discrete",   "$k$",       "single",   "generalized Bernoulli",
+  "multinomial", "discrete",   "$k$",       "multiple", "", 
+  "dirichlet",   "continuous", "",          "",         "multivariate beta"
+) |> 
+  inner_join(tribble(
+    ~distribution, ~example,     
+    "categorical", "",
+    "multinomial", "Models probability of counts for each side of a $k$-sided die rolled $n$ times.",        
+    "dirichlet",   ""
+  ), by = "distribution")
+```
+
+```{r}
+library(nhldata)
+
+nhl_id <- nhl_player_search("Matthews") |> 
+  pull(player_id)
+
+# file paths
+f_path <- c(
+  "game_stats" = "C:/mike_nanos/r_files/nhl-data/data/game_stats/game_stats_20212022.rds"
+)
+
+# date of interest
+date_id <- Sys.Date()
+
+# import and aggregate skater game log stats
+stats <- read_rds(f_path[["game_stats"]]) |> 
+  filter(!is.na(goals), pos != "G", date < date_id) |> 
+  filter(player_id == nhl_id) |> 
+  rename(nhl_id = player_id) |> 
+  unnest(stats) 
+
+stats2 <- stats |> 
+  select(team, venue, opp, goals) |> 
+  transmute(
+    team, 
+    scored = if_else(goals == 0L, 0L, 1L),
+    venue,
+    opp = if_else(opp == "TBL", opp, "OTHER")
+  ) 
+
+scoring_tbl <- stats2 |> 
+  group_by(venue, opp) |> 
+  summarize(
+    scored = sum(scored),
+    gp = n(),
+    Ps = scored / gp,
+    .groups = "drop"
+  ) 
+```
+
+
+$$
+\begin{align}
+P\left(A \mid B \right) &= \frac{P\left(A\right) \cdot P\left(B \mid A \right)}{P\left(B\right)} = \frac{P\left(A \cap B \right)}{P\left(B\right)}\\
+
+\end{align}
+$$
+
+$$
+P\left(A \mid B, C \right) = \frac{P\left(B,C \mid A \right) \cdot P\left(A\right)}{P\left(B\right)}
+$$
+
+$$
+P \left( S \mid OPP \right) = \frac{P \left( OPP \mid S \right) \cdot P \left( S \right)}{P \left( OPP \right)}
+$$
+
+```{r}
+stats2 |> 
+  filter(scored == 1L) |> 
+  group_by(opp) |> 
+  count(opp)
+
+opp_given_S <- scoring_tbl |> 
+  count(opp, wt = scored, name = "n_obs")
+
+P_opp_given_S <- opp_given_S[opp_given_S$opp != "OTHER", "n_obs", drop = T] / sum(opp_given_S$n_obs)
+
+P_S <- sum(scoring_tbl$scored) / sum(scoring_tbl$gp)
+
+
+stats2 |> 
+  count(scored, opp)
+
+P_S <- 42 / 76
+P_not_S <- (76 - 42) / 76
+
+sum(P_S, P_not_S)
+
+P_OPP_given_S <- 2 / 42
+P_not_OPP_given_S <- (42 - 2) / 42
+
+sum(P_OPP_given_S, P_not_OPP_given_S)
+
+P_OPP_given_not_S <- 4 / 34
+P_not_OPP_given_not_S <- (34 - 4) / 34
+
+sum(P_OPP_given_not_S, P_not_OPP_given_not_S)
+
+P_S_and_OPP <- P_S * P_OPP_given_S
+P_not_S_and_OPP <- P_not_S * P_OPP_given_not_S
+
+P_S_given_OPP <- (P_S_and_OPP) / sum(P_S_and_OPP, P_not_S_and_OPP)
+
+P_S_given_OPP
+```
+
+```{r}
+# libraries ---------------------------------------------------------------
+
+library(tidyverse)
+library(latex2exp)
+library(ggraph)
+library(tidygraph)
+
+mn::plot_theme()
+
+source(here::here("code/create_prob_tree.R"))
+
+prob_graph <- create_prob_tree(event_ids = c("S", "AWAY", "TBL")) 
+
+# as_tibble(prob_graph)
+
+plot_prob_tree(prob_graph)
+
+
+dfx <- stats |> 
+  transmute(
+    date, 
+    team, 
+    venue, 
+    opp = if_else(opp == "TBL", opp, "OTH"),
+    goals,
+    scored = if_else(goals == 0L, "Yes", "No")
+  )
+
+prob_list <- vector(mode = "list", length = 15L)
+
+event_A <- dfx |> count(scored)
+A <- mn::lookup(event_A, "Yes", scored, n)
+not_A <- mn::lookup(event_A, "No", scored, n)
+
+event_B <- dfx |> count(scored, venue)
+B_given_A <- mn::lookup(filter(event_B, scored == "Yes"), "away", venue, n)
+not_B_given_A <- mn::lookup(filter(event_B, scored == "Yes"), "home", venue, n)
+
+event_C <- dfx |> count(scored, venue, opp)
+C_given_A_B <- mn::lookup(filter(event_C, scored == "Yes" & venue == "away"), "TBL", opp, n)
+
+
+prob_list[[2]] <- A / sum(event_A$n)
+prob_list[[3]] <- not_A / sum(event_A$n)
+
+prob_list[[4]] <- B_given_A / pull(filter(event_A, scored == "Yes"), n)
+prob_list[[5]] <- not_B_given_A / pull(filter(event_A, scored == "Yes"), n)
+
+prob_list[[8]] <- C_given_A_B / pull(filter(event_B, scored == "Yes" & venue == "away"), n)
+
+
+prob_list
+
+P_A_B_C <- prob_list[[2]] * prob_list[[4]] * prob_list[[8]]
+P_Ac_B_C <- prob_list[[3]] * prob_list[[6]] * prob_list[[12]]
+
+# final result
+P_A_given_B_C <- P_A_B_C / (P_A_B_C + P_Ac_B_C)
+P_A_given_B_C
+```
+

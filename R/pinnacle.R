@@ -5,7 +5,7 @@
 #' @param flatten A logical passed to `httr2::resp_body_json()`.
 #'
 #' @return A data frame containing the extracted body from response
-#' @keywords internal
+#' @export
 #'
 #' @examples
 #' \dontrun{

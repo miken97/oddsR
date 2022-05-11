@@ -20,6 +20,7 @@ usethis::create_package("C:/mike_nanos/r_files/oddsR")
 # create dev_history.R and hide from pkg build
 # > save dev_history.R in project root
 usethis::use_build_ignore("dev_history.R")
+usethis::use_build_ignore("game_odds.Rmd")
 
 
 # Step 3: Git Connection --------------------------------------------------
@@ -89,3 +90,4 @@ pkgdown::build_site()
 # add pkgdown, yml and docs to .buildignore
 usethis::use_build_ignore("_pkgdown.yml")
 usethis::use_build_ignore("^pkgdown$")
+
