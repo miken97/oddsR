@@ -91,9 +91,14 @@ hockey_leagues <- map_dfr(api_resp, ~compact(.x))
 See [`httr2 Wrapping APIs Article](https://httr2.r-lib.org/articles/wrapping-apis.html) for more information.
 
 ```{r}
-pinnacle_request <- function(url, flatten = FALSE) {
+pinnacle_request <- function(url, flatten = FALSE) { #, ...) {
 
   # url <- "https://guest.api.arcadia.pinnacle.com/0.1/"
+  
+  query_lst <- list(
+    # ...,
+    all = "false"
+  )
   
   # create request that uses the base API url
   api_req <- httr2::request(url) |>
@@ -101,20 +106,21 @@ pinnacle_request <- function(url, flatten = FALSE) {
       "Referer" = "https://www.pinnacle.com/",
       "X-Session" = "Vqlf7eLQOFpEeUYxrXlGfd9YMXj7xYGH",
       "X-API-Key" = "CmX2KcMrXuFmNg6YFbmTxE0y9CIrOi0R"
-    ) 
-  
-  api_resp <- api_req |>
+    )  |>
     # add on additional paths (i.e. endpoints)
     httr2::req_url_path_append("sports") |> 
     httr2::req_url_path_append("19") |> 
     httr2::req_url_path_append("leagues") |> 
     # modify query parameters
-    httr2::req_url_query(`all` = FALSE) |> 
+    # httr2::req_url_query(`all` = FALSE) |> 
+    httr2::req_url_query(!!!query_lst) |> 
     httr2::req_perform()
   
-  # result returned as JSON
-  api_resp |>
+   # result returned as JSON
+  api_resp <- api_req |>
     httr2::resp_body_json(simplifyVector = flatten)
+ 
+  api_resp 
 
 }
 ```
@@ -353,7 +359,10 @@ Probability $G_{H} + G_{A} < X$ or $G_{H} + G_{A} > X$
 
 ```{r}
 # source script
-source(here::here("code/pinnacle_scrape.R"))
+# source(here::here("code/pinnacle_scrape.R"))
+
+library(tidyverse)
+library(nhldata)
 
 date_id <- Sys.Date()
 
@@ -365,7 +374,7 @@ pinn_df <- tidy_pinnacle() |>
 
 ```{r, eval = F}
 lines_df <- pinn_df |> 
-  filter(home_team == "STL")
+  filter(home_team == "CGY")
 
 names(lines_df)
 
@@ -374,6 +383,7 @@ away_ml <- lines_df[1, "away_imp_prob_ml", drop = T]
 home_ml <- lines_df[1, "home_imp_prob_ml", drop = T]
 
 sum(away_ml, home_ml)
+away_ml; home_ml
 
 # spread (goal difference probabilities)
 underdog <- lines_df[1, "underdog", drop = T]
@@ -392,24 +402,24 @@ total; under; over
 
 ```{r}
 # moneyline (win probabilities)
-away_ml <- 0.4628794
-home_ml <- 0.5371206
+away_ml <- 0.3167146
+home_ml <- 0.6832854
 
 sum(away_ml, home_ml)
 away_ml; home_ml
 
 # spread (goal difference probabilities)
 underdog <- "away"
-away_pl <- 0.6704792
-home_pl <- 0.3295208
+away_pl <- 0.5538448
+home_pl <- 0.4461552
 
 sum(away_pl, home_pl)
 away_pl; home_pl; underdog
 
 # totals (total goal probability)
-total <- 6.5
-under <- 0.5095568
-over <- 0.4904432
+total <- 5.5
+under <- 0.5568303
+over <- 0.4431697
 
 sum(under, over)
 total; under; over
@@ -426,32 +436,42 @@ Find values for $\lambda_{A}$ and $\lambda_{H}$ that equate to:
   + $P(G_{H} + G_{A}) > $ `r total` is `r scales::percent(over, 0.01)`.
 
 ```{r}
-# totals
-total <- lambda_away + lambda_home
 
-totals_fn <- function(par, total, away_ml, home_ml, under, over) {
+goals_from_line <- function(par, away_ml, home_ml, away_pl, home_pl, underdog, total, under, over) {
   
   lambda_away <- par[1]
   lambda_home <- par[2]
   
-  joint_pdf_df <- crossing(
+  dog <- underdog
+  chalk <- if_else(underdog == "away", "home", "away")
+  
+  
+  # initialize data ----
+  goals_crossed <- crossing(
     goals_away = seq.int(0L, 12L), 
     goals_home = seq.int(0L, 12L)
-  ) |> 
+  ) 
+  
+  joint_pdf_df <- goals_crossed |> 
     mutate(
+      goals_diff = .data[[paste0("goals_", chalk)]] - .data[[paste0("goals_", dog)]],
       total_goals = goals_away + goals_home,
       pdf_away = dpois(goals_away, lambda = lambda_away),
       pdf_home = dpois(goals_home, lambda = lambda_home),
-      joint_pdf = pdf_away * pdf_home,
+      joint_pdf = pdf_away * pdf_home
+    )
+
+  
+  # moneyline ----
+  moneyline_pdf <- joint_pdf_df |>
+    mutate(
       ml_winner = case_when(
         goals_away > goals_home ~ "away",
         goals_away < goals_home ~ "home",
         goals_away == goals_home ~ "tie",
         TRUE ~ NA_character_
-      )
-    )
-  
-  moneyline_pdf <- joint_pdf_df |> 
+      )  
+    ) |> 
     group_by(ml_winner) |> 
     summarize(pdf = sum(joint_pdf)) |> 
     filter(ml_winner != "tie") |> 
@@ -463,6 +483,30 @@ totals_fn <- function(par, total, away_ml, home_ml, under, over) {
   prob_ml_home <- sum(moneyline_pdf[moneyline_pdf$ml_winner == "home", "pdf", drop = T])
   sse_moneyline <- sum((prob_ml_away - away_ml)^2, (prob_ml_home - home_ml)^2)
   
+  
+  # puckline (spread) ----
+  puckline_pdf <- joint_pdf_df |> 
+     mutate(
+      pl_winner = case_when(
+        goals_diff >= 2L ~ chalk,
+        goals_diff <= 1L ~ dog,
+        goals_diff == 0L ~ "tie",
+        TRUE ~ NA_character_
+      )  
+    ) |>
+    group_by(pl_winner) |> 
+    summarize(pdf = sum(joint_pdf)) |> 
+    filter(pl_winner != "tie") |> 
+    mutate(pdf = pdf / sum(pdf))
+  
+  # sum(puckline_pdf$pdf)
+  
+  prob_pl_away <- sum(puckline_pdf[puckline_pdf$pl_winner == "away", "pdf", drop = T])
+  prob_pl_home <- sum(puckline_pdf[puckline_pdf$pl_winner == "home", "pdf", drop = T])
+  sse_puckline <- sum((prob_pl_away - away_pl)^2, (prob_pl_home - home_pl)^2)
+  
+  
+  # totals ----
   totals_pdf <- joint_pdf_df |> 
     group_by(total_goals) |> 
     summarize(pdf = sum(joint_pdf))
@@ -473,7 +517,9 @@ totals_fn <- function(par, total, away_ml, home_ml, under, over) {
   prob_over <- sum(totals_pdf[totals_pdf$total_goals > total, "pdf", drop = T])
   sse_totals <- sum((prob_under - under)^2, (prob_over - over)^2)
   
-  sse <- sse_moneyline + sse_totals
+  
+  # sum of squared residuals ----
+  sse <- sse_moneyline + sse_puckline + sse_totals
   
   sse
   
@@ -481,10 +527,13 @@ totals_fn <- function(par, total, away_ml, home_ml, under, over) {
 
 # use mle to find most likely value of theta (i.e. P(data|theta))
 mle_fit <- optim(
-  par = c(2, 2),    # initial values
-  fn = totals_fn, 
+  par = c(1, 1),         # initial values
+  fn = goals_from_line, 
   away_ml = away_ml,
   home_ml = home_ml,
+  away_pl = away_pl,
+  home_pl = home_pl,
+  underdog = underdog,
   total = total, 
   under = under, 
   over = over,
@@ -504,48 +553,57 @@ mle_fit
 lambda_away <- mle_fit$par[1]
 lambda_home <- mle_fit$par[2]
 
+lambda_away; lambda_home
 sum(mle_fit$par)
 
-away_win_pr <- mean(rpois(10000, lambda = mle_fit$par[1]) > rpois(10000, lambda = mle_fit$par[2])) 
-home_win_pr <- mean(rpois(10000, lambda = mle_fit$par[1]) < rpois(10000, lambda = mle_fit$par[2])) 
+away_goals_sim <- rpois(1e6, lambda = mle_fit$par[1])
+home_goals_sim <- rpois(1e6, lambda = mle_fit$par[2])
 
-away_win_pr / (away_win_pr + home_win_pr)
-home_win_pr / (away_win_pr + home_win_pr)
+# moneyline
+away_ml_pr_raw <- mean(away_goals_sim > home_goals_sim) 
+home_ml_pr_raw <- mean(away_goals_sim < home_goals_sim)
+away_ml_pr <- away_ml_pr_raw / (away_ml_pr_raw + home_ml_pr_raw)
+home_ml_pr <- home_ml_pr_raw / (away_ml_pr_raw + home_ml_pr_raw)
 
+away_ml_pr; home_ml_pr
+sum(away_ml_pr, home_ml_pr)
+
+
+# puckline
+
+if (underdog == "away") {
+ 
+  away_pl_pr_raw <- mean(home_goals_sim - away_goals_sim <= 1)
+  home_pl_pr_raw <- mean(home_goals_sim - away_goals_sim >= 2)
+  away_pl_pr <- away_pl_pr_raw / (away_pl_pr_raw + home_pl_pr_raw)
+  home_pl_pr <- home_pl_pr_raw / (away_pl_pr_raw + home_pl_pr_raw)
+  
+} 
+
+if (underdog == "home") {
+ 
+  away_pl_pr_raw <- mean(away_goals_sim - home_goals_sim <= 1)
+  home_pl_pr_raw <- mean(away_goals_sim - home_goals_sim >= 2)
+  away_pl_pr <- away_pl_pr_raw / (away_pl_pr_raw + home_pl_pr_raw)
+  home_pl_pr <- home_pl_pr_raw / (away_pl_pr_raw + home_pl_pr_raw)
+  
+}
+
+away_pl_pr; home_pl_pr
+sum(away_pl_pr, home_pl_pr)
 
 # under / over probabilities
 ppois(total, lambda = sum(mle_fit$par), lower.tail = TRUE)
 ppois(total, lambda = sum(mle_fit$par), lower.tail = FALSE)
+
+tribble(
+  ~bet,         ~away,    ~home,    ~away_pred, ~home_pred,
+  "moneyline",  away_ml,  home_ml,  away_ml_pr, home_ml_pr, 
+  "puckline",   away_pl,  home_pl,  away_pl_pr, home_pl_pr, 
+  "totals",     NA_real_, NA_real_, NA_real_,   NA_real_
+)
 ```
 
-
-```{r}
-  joint_pdf_totals <- crossing(
-    goals_away = seq.int(0L, 12L), 
-    goals_home = seq.int(0L, 12L)
-  ) |> 
-    mutate(
-      total_goals = goals_away + goals_home,
-      pdf_away = dpois(goals_away, lambda = lambda_away),
-      pdf_home = dpois(goals_home, lambda = lambda_home),
-      joint_pdf = pdf_away * pdf_home
-    )
-
-joint_pdf_totals |> 
-  select(goals_away, goals_home, joint_pdf) |> 
-  mutate(
-    ml_winner = case_when(
-      goals_away > goals_home ~ "away",
-      goals_away < goals_home ~ "home",
-      goals_away == goals_home ~ "tie",
-      TRUE ~ NA_character_
-    ) 
-  ) |> 
-  group_by(winner) |> 
-  summarize(prob = sum(joint_pdf))
-  
-  pivot_wider(names_from = goals_home, values_from = joint_pdf)
-```
 
 
 ---------------------------------------------------------------------------
