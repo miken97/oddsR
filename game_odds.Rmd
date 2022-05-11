@@ -605,6 +605,68 @@ tribble(
 ```
 
 
+```{r}
+lines_fn <- function(away_ml, home_ml, away_pl, home_pl, underdog, total, under, over) {
+  
+  # use mle to find most likely value of theta (i.e. P(data|theta))
+  mle_fit <- optim(
+    par = c(1, 1),         # initial values
+    fn = goals_from_line, 
+    away_ml = away_ml,
+    home_ml = home_ml,
+    away_pl = away_pl,
+    home_pl = home_pl,
+    underdog = underdog,
+    total = total, 
+    under = under, 
+    over = over,
+    method = "L-BFGS-B",
+    lower = c(
+      lambda_away = 1, 
+      lambda_home = 1
+    ),
+    upper = c(
+      lambda_away = 8, 
+      lambda_home = 8
+    )
+  )
+  
+  tibble(lambda_away = mle_fit$par[1], lambda_home = mle_fit$par[2])
+  
+}
+```
+
+```{r}
+x <- pinn_df |> 
+  mutate(ex_goals = pmap(
+    list(
+      away_imp_prob_ml,
+      home_imp_prob_ml,
+      away_imp_prob_pl,
+      home_imp_prob_pl,
+      underdog,
+      total = over_points,
+      under_imp_prob,
+      over_imp_prob
+    ),
+    ~lines_fn(
+      away_ml = ..1, 
+      home_ml = ..2, 
+      away_pl = ..3, 
+      home_pl = ..4,
+      underdog = ..5, 
+      total = ..6, 
+      under = ..7, 
+      over = ..8
+    )
+  ))
+
+x |> 
+  select(away_team, home_team, underdog, ex_goals) |> 
+  unnest_wider(ex_goals)
+```
+
+
 
 ---------------------------------------------------------------------------
 
